@@ -763,3 +763,86 @@ Currently, both status and metadata changes of Pods will trigger the reconcile o
 However, for larger clusters or scenarios with frequent Pod update events, these unnecessary reconciles will block the real CloneSet reconciles, resulting in delayed rolling updates and other changes.
 To solve this problem, you can enable the **feature-gate CloneSetEventHandlerOptimization** to reduce some unnecessary reconcile enqueues.
 
+## CloneSet Status
+
+**FEATURE STATE:** Kruise v1.9.0
+
+A CloneSet enters various states during its lifecycle. It can be progressing while rolling out a new revision, it can be complete, or it can fail to progress.
+
+### Progressing CloneSet
+Kruise marks a CloneSet as progressing when one of the following tasks is performed:
+
+- The CloneSet rolls out a new revision.
+- The CloneSet is scaling up its newest revision.
+- The CloneSet is scaling down its older revision.
+- New Pods become ready or available (ready for at least MinReadySeconds).
+
+When the rollout becomes "progressing", the CloneSet controller adds a condition with the following attributes to the CloneSet's `.status.conditions`:
+
+```yaml
+type: Progressing
+status: "True"
+reason: CloneSetUpdated
+```
+
+### Paused CloneSet
+Kruise marks a CloneSet as paused when it has the following characteristics:
+
+- All replicas associated with the CloneSet partition have been updated to the specified latest revision, meaning the partition update requests have been completed.
+- All replicas associated with the CloneSet partition are available.
+
+When the rollout becomes "paused", the CloneSet controller sets a condition with the following attributes to the CloneSet's `.status.conditions`:
+
+```yaml
+type: Progressing
+status: "True"
+reason: ProgressPartitionAvailable
+```
+
+This Progressing condition will retain a status value of "True" until a scale-up or rollout operation is performed. The condition will be updated to "Progressing".
+
+### Complete CloneSet
+Kruise marks a CloneSet as complete when it has the following characteristics:
+
+- All of the replicas associated with the CloneSet have been updated to the latest revision you've specified, meaning any updates you've requested have been completed.
+- All of the replicas associated with the CloneSet are available.
+- No old replicas for the CloneSet are running.
+
+When the rollout becomes "complete", the CloneSet controller sets a condition with the following attributes to the CloneSet's `.status.conditions`:
+
+```yaml
+type: Progressing
+status: "True"
+reason: CloneSetAvailable
+```
+
+This Progressing condition will retain a status value of "True" until a new revision is initiated. The condition holds even when availability of replicas changes (which does instead affect the Available condition).
+
+### Failed CloneSet
+Your CloneSet may get stuck trying to deploy its newest revision without ever completing. This can occur due to some of the following factors:
+
+- Insufficient quota
+- Readiness probe failures
+- Image pull errors
+- Insufficient permissions
+- Limit ranges
+- Application runtime misconfiguration
+
+One way you can detect this condition is to specify a deadline parameter in your CloneSet spec `.spec.progressDeadlineSeconds`: 
+`.spec.progressDeadlineSeconds` is an optional field that defaults to 600 seconds. This field denotes the number of seconds the CloneSet controller waits before indicating (in the CloneSet status) that the CloneSet progress has stalled. If specified, this field value needs to be greater than the `.spec.minReadySeconds` value.
+
+Once the deadline has been exceeded, the CloneSet controller adds a CloneSetCondition with the following attributes to the CloneSet's `.status.conditions`:
+
+```yaml
+type: Progressing
+status: "False"
+reason: ProgressDeadlineExceeded
+```
+
+> **Note:**
+>
+> If you pause a CloneSet rollout, Kruise does not check progress against your specified deadline. You can safely pause a CloneSet rollout in the middle of a rollout and resume without triggering the condition for exceeding the deadline.
+
+### Operating on a failed CloneSet
+All actions that apply to a complete CloneSet also apply to a failed CloneSet. You can roll back to a previous revision, or even pause it if you need to apply multiple tweaks in the CloneSet Pod template.
+

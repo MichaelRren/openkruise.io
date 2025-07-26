@@ -736,3 +736,88 @@ FEATURE STATE: Kruise v1.3.0
 
 但对于集群规模较大或 Pod Update 事件较多的情况，这些无效的 reconcile 将会阻塞真正的 CloneSet reconcile，进而导致 CloneSet 的滚动升级等变更延迟。
 为了解决这个问题，可以打开 **feature-gate CloneSetEventHandlerOptimization** 来减少一些不必要的 reconcile 入队。
+
+## CloneSet 状态
+
+**FEATURE STATE:** Kruise v1.9.0
+
+CloneSet 的生命周期中会有许多状态。上线新的 CloneSet 期间可能处于 Progressing（进行中），可能是 Complete（已可用），也可能是 Paused（分组暂停），还可能是 Failed（失败）以至于无法继续进行。
+
+### 进行中的 CloneSet
+执行下面的任务期间，Kruise 标记 CloneSet 为进行中（Progressing）：
+
+- CloneSet 正在滚动升级。
+- CloneSet 正在为其最新的 Revision 扩容。
+- CloneSet 正在为其旧有的 Revision 缩容。
+- 新的 Pod 已经就绪或者可用（就绪至少持续了 MinReadySeconds 秒）。
+
+当上线过程进入 "Progressing" 状态时，CloneSet 控制器会向 CloneSet 的 `.status.conditions` 中添加包含下面属性的状况条目：
+
+```yaml
+type: Progressing
+status: "True"
+reason: CloneSetUpdated
+```
+
+### 分组暂停的 CloneSet
+
+当 CloneSet 具有以下特征时，Kruise 将其标记为分组暂停（Paused）：
+
+- CloneSet 指定分组比例的副本都已更新到指定的最新版本，这意味着请求的分组比例更新都已完成。
+- CloneSet 指定分组比例的副本都可用。
+
+当上线过程进入 "Paused" 状态时，CloneSet 控制器会向 CloneSet 的 `.status.conditions` 中添加包含下面属性的状况条目：
+
+```yaml
+type: Progressing
+status: "True"
+reason: ProgressPartitionAvailable
+```
+
+这一 Progressing 状况的状态值会持续为 "True"，直至扩容被触发或者继续更新发布比例，CloneSet 状态会被更新为进行中。
+
+### 可用的 CloneSet
+当 CloneSet 具有以下特征时，Kruise 将其标记为完成（Complete）：
+
+- 与 CloneSet 关联的所有副本都已更新到指定的最新版本，这意味着之前请求的所有更新都已完成。
+- 与 CloneSet 关联的所有副本都可用。
+- 未运行 CloneSet 的旧副本。
+
+当上线过程进入 "Complete" 状态时，CloneSet 控制器会向 CloneSet 的 `.status.conditions` 中添加包含下面属性的状况条目：
+
+```yaml
+type: Progressing
+status: "True"
+reason: CloneSetAvailable
+```
+
+这一 Progressing 状况的状态值会持续为 "True"，直至新的上线动作被触发。 即使副本的可用状态发生变化（进而影响 Available 状况），Progressing 状况的值也不会变化。
+
+### 失败的 CloneSet
+CloneSet 可能会在尝试部署其最新的 Revision 受挫，一直处于未完成状态。 造成此情况一些可能因素如下：
+
+- 配额（Quota）不足
+- 就绪探测（Readiness Probe）失败
+- 镜像拉取错误
+- 权限不足
+- 限制范围（Limit Ranges）问题
+- 应用程序运行时的配置错误
+
+检测此状况的一种方法是在 CloneSet 规约中指定截止时间参数 `.spec.progressDeadlineSeconds`：
+
+`.spec.progressDeadlineSeconds` 是一个可选字段，默认值为 600 秒。该字段是一个秒数值，CloneSet 控制器在（通过 CloneSet 状态）标识 CloneSet 进展停滞之前，需要等待所给的时长。如果指定此值，则此字段值需要大于 `.spec.minReadySeconds` 取值。
+
+超过截止时间后，CloneSet 控制器将添加具有以下属性的 CloneSet 状况到 CloneSet 的 `.status.conditions` 中：
+
+```yaml
+type: Progressing
+status: "False"
+reason: ProgressDeadlineExceeded
+```
+
+> **说明：**
+>
+> 如果用户暂停了某个 CloneSet 上线，Kruise 不再根据指定的截止时间检查 CloneSet 上线的进展。 用户可以在上线过程中间安全地暂停 CloneSet 再恢复其执行，这样做不会导致超出最后时限的问题。
+
+### 对失败 CloneSet 的操作
+可应用于已完成的 CloneSet 的所有操作也适用于失败的 CloneSet。 你可以对其回滚到以前的修订版本等操作，或者在需要对 CloneSet 的 Pod 模板应用多项调整时，将 CloneSet 暂停。
